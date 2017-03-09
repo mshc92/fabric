@@ -23,8 +23,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"shim"
-        pb "protos/peer"
+	"github.com/mshc92/fabric/shim"
+        pb "github.com/mshc92/fabric/protos/peer"
 )
 
 // SimpleChaincode example simple Chaincode implementation
