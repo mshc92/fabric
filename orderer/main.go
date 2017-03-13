@@ -25,10 +25,11 @@ import (
 	_ "net/http/pprof"
 	"os"
 
+	genesisconfig "github.com/hyperledger/fabric/common/configtx/tool/localconfig"
+	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/orderer/common/bootstrap/file"
-	"github.com/hyperledger/fabric/orderer/common/bootstrap/provisional"
 	"github.com/hyperledger/fabric/orderer/kafka"
 	ordererledger "github.com/hyperledger/fabric/orderer/ledger"
 	fileledger "github.com/hyperledger/fabric/orderer/ledger/file"
@@ -84,7 +85,7 @@ func main() {
 	}
 
 	// Load local MSP
-	err = mspmgmt.LoadLocalMsp(conf.General.LocalMSPDir)
+	err = mspmgmt.LoadLocalMsp(conf.General.LocalMSPDir, conf.General.BCCSP, conf.General.LocalMSPID)
 	if err != nil { // Handle errors reading the config file
 		panic(fmt.Errorf("Failed initializing crypto [%s]", err))
 	}
@@ -114,7 +115,7 @@ func main() {
 		// Select the bootstrapping mechanism
 		switch conf.General.GenesisMethod {
 		case "provisional":
-			genesisBlock = provisional.New(conf).GenesisBlock()
+			genesisBlock = provisional.New(genesisconfig.Load(conf.General.GenesisProfile)).GenesisBlock()
 		case "file":
 			genesisBlock = file.New(conf.General.GenesisFile).GenesisBlock()
 		default:
@@ -147,15 +148,16 @@ func main() {
 
 	consenters := make(map[string]multichain.Consenter)
 	consenters["solo"] = solo.New()
-	consenters["kafka"] = kafka.New(conf.Kafka.Version, conf.Kafka.Retry)
+	consenters["kafka"] = kafka.New(conf.Kafka.Version, conf.Kafka.Retry, conf.Kafka.TLS)
 	consenters["sbft"] = sbft.New(makeSbftConsensusConfig(conf), makeSbftStackConfig(conf))
 
-	manager := multichain.NewManagerImpl(lf, consenters, localmsp.NewSigner())
+	signer := localmsp.NewSigner()
+
+	manager := multichain.NewManagerImpl(lf, consenters, signer)
 
 	server := NewServer(
 		manager,
-		int(conf.General.QueueSize),
-		int(conf.General.MaxWindowSize),
+		signer,
 	)
 
 	ab.RegisterAtomicBroadcastServer(grpcServer.Server(), server)
@@ -164,19 +166,20 @@ func main() {
 }
 
 func makeSbftConsensusConfig(conf *config.TopLevel) *sbft.ConsensusConfig {
-	cfg := simplebft.Config{N: conf.Sbft.N, F: conf.Sbft.F, BatchDurationNsec: conf.Sbft.BatchDurationNsec,
-		BatchSizeBytes:     conf.Sbft.BatchSizeBytes,
-		RequestTimeoutNsec: conf.Sbft.RequestTimeoutNsec}
+	cfg := simplebft.Config{N: conf.Genesis.SbftShared.N, F: conf.Genesis.SbftShared.F,
+		BatchDurationNsec:  uint64(conf.Genesis.DeprecatedBatchTimeout),
+		BatchSizeBytes:     uint64(conf.Genesis.DeprecatedBatchSize),
+		RequestTimeoutNsec: conf.Genesis.SbftShared.RequestTimeoutNsec}
 	peers := make(map[string][]byte)
-	for addr, cert := range conf.Sbft.Peers {
+	for addr, cert := range conf.Genesis.SbftShared.Peers {
 		peers[addr], _ = sbftcrypto.ParseCertPEM(cert)
 	}
 	return &sbft.ConsensusConfig{Consensus: &cfg, Peers: peers}
 }
 
 func makeSbftStackConfig(conf *config.TopLevel) *backend.StackConfig {
-	return &backend.StackConfig{ListenAddr: conf.Sbft.PeerCommAddr,
-		CertFile: conf.Sbft.CertFile,
-		KeyFile:  conf.Sbft.KeyFile,
-		DataDir:  conf.Sbft.DataDir}
+	return &backend.StackConfig{ListenAddr: conf.SbftLocal.PeerCommAddr,
+		CertFile: conf.SbftLocal.CertFile,
+		KeyFile:  conf.SbftLocal.KeyFile,
+		DataDir:  conf.SbftLocal.DataDir}
 }

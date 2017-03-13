@@ -25,9 +25,13 @@ import (
 	"fmt"
 	"os"
 
+	"crypto/sha256"
+	"encoding/hex"
+
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/msp"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/stretchr/testify/assert"
@@ -37,14 +41,17 @@ func createCIS() *pb.ChaincodeInvocationSpec {
 	return &pb.ChaincodeInvocationSpec{
 		ChaincodeSpec: &pb.ChaincodeSpec{
 			Type:        pb.ChaincodeSpec_GOLANG,
-			ChaincodeID: &pb.ChaincodeID{Name: "chaincode_name"},
+			ChaincodeId: &pb.ChaincodeID{Name: "chaincode_name"},
 			Input:       &pb.ChaincodeInput{Args: [][]byte{[]byte("arg1"), []byte("arg2")}}}}
 }
 
 func TestProposal(t *testing.T) {
-	uuid := util.GenerateUUID()
 	// create a proposal from a ChaincodeInvocationSpec
-	prop, err := CreateChaincodeProposalWithTransient(uuid, common.HeaderType_ENDORSER_TRANSACTION, util.GetTestChainID(), createCIS(), []byte("creator"), []byte("transient"))
+	prop, _, err := CreateChaincodeProposalWithTransient(
+		common.HeaderType_ENDORSER_TRANSACTION,
+		util.GetTestChainID(), createCIS(),
+		[]byte("creator"),
+		map[string][]byte{"certx": []byte("transient")})
 	if err != nil {
 		t.Fatalf("Could not create chaincode proposal, err %s\n", err)
 		return
@@ -84,10 +91,20 @@ func TestProposal(t *testing.T) {
 		t.Fatalf("Could not unmarshal the header, err %s\n", err)
 	}
 
+	chdr, err := UnmarshalChannelHeader(hdr.ChannelHeader)
+	if err != nil {
+		t.Fatalf("Could not unmarshal channel header, err %s", err)
+	}
+
+	shdr, err := GetSignatureHeader(hdr.SignatureHeader)
+	if err != nil {
+		t.Fatalf("Could not unmarshal signature header, err %s", err)
+	}
+
 	// sanity check on header
-	if hdr.ChainHeader.Type != int32(common.HeaderType_ENDORSER_TRANSACTION) ||
-		hdr.SignatureHeader.Nonce == nil ||
-		string(hdr.SignatureHeader.Creator) != "creator" {
+	if chdr.Type != int32(common.HeaderType_ENDORSER_TRANSACTION) ||
+		shdr.Nonce == nil ||
+		string(shdr.Creator) != "creator" {
 		t.Fatalf("Invalid header after unmarshalling\n")
 		return
 	}
@@ -100,7 +117,7 @@ func TestProposal(t *testing.T) {
 	}
 
 	// sanity check on header extension
-	if string(hdrExt.ChaincodeID.Name) != "chaincode_name" {
+	if string(hdrExt.ChaincodeId.Name) != "chaincode_name" {
 		t.Fatalf("Invalid header extension after unmarshalling\n")
 		return
 	}
@@ -114,7 +131,7 @@ func TestProposal(t *testing.T) {
 
 	// sanity check on cis
 	if cis.ChaincodeSpec.Type != pb.ChaincodeSpec_GOLANG ||
-		cis.ChaincodeSpec.ChaincodeID.Name != "chaincode_name" ||
+		cis.ChaincodeSpec.ChaincodeId.Name != "chaincode_name" ||
 		len(cis.ChaincodeSpec.Input.Args) != 2 ||
 		string(cis.ChaincodeSpec.Input.Args[0]) != "arg1" ||
 		string(cis.ChaincodeSpec.Input.Args[1]) != "arg2" {
@@ -122,26 +139,27 @@ func TestProposal(t *testing.T) {
 		return
 	}
 
-	porposalContexd, err := GetChaincodeProposalContext(prop)
+	creator, transient, err := GetChaincodeProposalContext(prop)
 	if err != nil {
 		t.Fatalf("Failed getting chaincode proposal context [%s]", err)
 	}
-	if string(porposalContexd.Transient) != "transient" {
-		t.Fatalf("Failed checking Transient field. Invalid value, expectext 'transient', got [%s]", string(porposalContexd.Transient))
+	if string(creator) != "creator" {
+		t.Fatalf("Failed checking Creator field. Invalid value, expectext 'creator', got [%s]", string(creator))
 		return
 	}
-	if string(porposalContexd.Creator) != "creator" {
-		t.Fatalf("Failed checking Creator field. Invalid value, expectext 'creator', got [%s]", string(porposalContexd.Creator))
+	value, ok := transient["certx"]
+	if !ok || string(value) != "transient" {
+		t.Fatalf("Failed checking Transient field. Invalid value, expectext 'transient', got [%s]", string(value))
 		return
 	}
 }
 
 func TestProposalResponse(t *testing.T) {
 	events := &pb.ChaincodeEvent{
-		ChaincodeID: "ccid",
+		ChaincodeId: "ccid",
 		EventName:   "EventName",
 		Payload:     []byte("EventPayload"),
-		TxID:        "TxID"}
+		TxId:        "TxID"}
 
 	pHashBytes := []byte("proposal_hash")
 	pResponse := &pb.Response{Status: 200}
@@ -186,7 +204,7 @@ func TestProposalResponse(t *testing.T) {
 	}
 
 	// sanity check on the event
-	if string(event.ChaincodeID) != "ccid" {
+	if string(event.ChaincodeId) != "ccid" {
 		t.Fatalf("Invalid actions after unmarshalling")
 		return
 	}
@@ -223,8 +241,7 @@ func TestProposalResponse(t *testing.T) {
 
 func TestEnvelope(t *testing.T) {
 	// create a proposal from a ChaincodeInvocationSpec
-	uuid := util.GenerateUUID()
-	prop, err := CreateChaincodeProposal(uuid, common.HeaderType_ENDORSER_TRANSACTION, util.GetTestChainID(), createCIS(), signerSerialized)
+	prop, _, err := CreateChaincodeProposal(common.HeaderType_ENDORSER_TRANSACTION, util.GetTestChainID(), createCIS(), signerSerialized)
 	if err != nil {
 		t.Fatalf("Could not create chaincode proposal, err %s\n", err)
 		return
@@ -334,13 +351,47 @@ func TestEnvelope(t *testing.T) {
 	}
 }
 
+func TestProposalTxID(t *testing.T) {
+	nonce := []byte{1}
+	creator := []byte{2}
+
+	txid, err := ComputeProposalTxID(nonce, creator)
+	assert.NotEmpty(t, txid, "TxID cannot be empty.")
+	assert.NoError(t, err, "Failed computing txID")
+	assert.Nil(t, CheckProposalTxID(txid, nonce, creator))
+	assert.Error(t, CheckProposalTxID("", nonce, creator))
+
+	txid, err = ComputeProposalTxID(nil, nil)
+	assert.NotEmpty(t, txid, "TxID cannot be empty.")
+	assert.NoError(t, err, "Failed computing txID")
+}
+
+func TestComputeProposalTxID(t *testing.T) {
+	txid, err := ComputeProposalTxID([]byte{1}, []byte{1})
+	assert.NoError(t, err, "Failed computing TxID")
+
+	// Compute the function computed by ComputeProposalTxID,
+	// namely, base64(sha256(nonce||creator))
+	hf := sha256.New()
+	hf.Write([]byte{1})
+	hf.Write([]byte{1})
+	hashOut := hf.Sum(nil)
+	txid2 := hex.EncodeToString(hashOut)
+
+	t.Logf("% x\n", hashOut)
+	t.Logf("% s\n", txid)
+	t.Logf("% s\n", txid2)
+
+	assert.Equal(t, txid, txid2)
+}
+
 var signer msp.SigningIdentity
 var signerSerialized []byte
 
 func TestMain(m *testing.M) {
 	// setup the MSP manager so that we can sign/verify
 	mspMgrConfigFile := "../../msp/sampleconfig/"
-	err := mspmgmt.LoadFakeSetupWithLocalMspAndTestChainMsp(mspMgrConfigFile)
+	err := msptesttools.LoadMSPSetupForTesting(mspMgrConfigFile)
 	if err != nil {
 		os.Exit(-1)
 		fmt.Printf("Could not initialize msp")

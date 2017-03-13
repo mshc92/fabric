@@ -24,8 +24,8 @@ import (
 	gossipcommon "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
 
-	gossip_proto "github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/protos/common"
+	gossip_proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/op/go-logging"
@@ -178,10 +178,10 @@ func (b *blocksProviderImpl) seekOldest() error {
 	return b.client.Send(&common.Envelope{
 		Payload: utils.MarshalOrPanic(&common.Payload{
 			Header: &common.Header{
-				ChainHeader: &common.ChainHeader{
-					ChainID: b.chainID,
-				},
-				SignatureHeader: &common.SignatureHeader{},
+				ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+					ChannelId: b.chainID,
+				}),
+				SignatureHeader: utils.MarshalOrPanic(&common.SignatureHeader{}),
 			},
 			Data: utils.MarshalOrPanic(&orderer.SeekInfo{
 				Start:    &orderer.SeekPosition{Type: &orderer.SeekPosition_Oldest{Oldest: &orderer.SeekOldest{}}},
@@ -196,10 +196,10 @@ func (b *blocksProviderImpl) seekLatestFromCommitter(height uint64) error {
 	return b.client.Send(&common.Envelope{
 		Payload: utils.MarshalOrPanic(&common.Payload{
 			Header: &common.Header{
-				ChainHeader: &common.ChainHeader{
-					ChainID: b.chainID,
-				},
-				SignatureHeader: &common.SignatureHeader{},
+				ChannelHeader: utils.MarshalOrPanic(&common.ChannelHeader{
+					ChannelId: b.chainID,
+				}),
+				SignatureHeader: utils.MarshalOrPanic(&common.SignatureHeader{}),
 			},
 			Data: utils.MarshalOrPanic(&orderer.SeekInfo{
 				Start:    &orderer.SeekPosition{Type: &orderer.SeekPosition_Specified{Specified: &orderer.SeekSpecified{Number: height}}},

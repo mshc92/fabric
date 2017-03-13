@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	cutil "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/peer/common"
 	pcommon "github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
@@ -76,7 +75,7 @@ func getJoinCCSpec() (*pb.ChaincodeSpec, error) {
 
 	spec = &pb.ChaincodeSpec{
 		Type:        pb.ChaincodeSpec_Type(pb.ChaincodeSpec_Type_value["GOLANG"]),
-		ChaincodeID: &pb.ChaincodeID{Name: "cscc"},
+		ChaincodeId: &pb.ChaincodeID{Name: "cscc"},
 		Input:       input,
 	}
 
@@ -97,10 +96,8 @@ func executeJoin(cf *ChannelCmdFactory) (err error) {
 		return fmt.Errorf("Error serializing identity for %s: %s\n", cf.Signer.GetIdentifier(), err)
 	}
 
-	uuid := cutil.GenerateUUID()
-
 	var prop *pb.Proposal
-	prop, err = putils.CreateProposalFromCIS(uuid, pcommon.HeaderType_CONFIGURATION_TRANSACTION, "", invocation, creator)
+	prop, _, err = putils.CreateProposalFromCIS(pcommon.HeaderType_CONFIG, "", invocation, creator)
 	if err != nil {
 		return fmt.Errorf("Error creating proposal for join %s\n", err)
 	}

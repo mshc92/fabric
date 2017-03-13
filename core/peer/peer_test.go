@@ -23,12 +23,15 @@ import (
 	"testing"
 
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
+	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	ccp "github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/deliverservice"
 	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
 	"github.com/hyperledger/fabric/core/mocks/ccprovider"
 	"github.com/hyperledger/fabric/gossip/service"
 	"github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/msp/mgmt/testtools"
+	"github.com/hyperledger/fabric/peer/gossip/mcs"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
@@ -82,10 +85,11 @@ func TestCreateChainFromBlock(t *testing.T) {
 	go grpcServer.Serve(socket)
 	defer grpcServer.Stop()
 
-	mgmt.LoadFakeSetupWithLocalMspAndTestChainMsp("../../msp/sampleconfig")
+	msptesttools.LoadMSPSetupForTesting("../../msp/sampleconfig")
 
 	identity, _ := mgmt.GetLocalSigningIdentityOrPanic().Serialize()
-	service.InitGossipServiceCustomDeliveryFactory(identity, "localhost:13611", grpcServer, &mockDeliveryClientFactory{})
+	messageCryptoService := mcs.New(&mockpolicies.PolicyManagerMgmt{})
+	service.InitGossipServiceCustomDeliveryFactory(identity, "localhost:13611", grpcServer, &mockDeliveryClientFactory{}, messageCryptoService)
 
 	err = CreateChainFromBlock(block)
 	if err != nil {
@@ -120,6 +124,11 @@ func TestCreateChainFromBlock(t *testing.T) {
 	Initialize(nil)
 
 	SetCurrConfigBlock(block, testChainID)
+
+	channels := GetChannelsInfo()
+	if len(channels) != 1 {
+		t.Fatalf("incorrect number of channels")
+	}
 }
 
 func TestNewPeerClientConnection(t *testing.T) {

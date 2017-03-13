@@ -21,7 +21,6 @@ import (
 
 	"golang.org/x/net/context"
 
-	"github.com/hyperledger/fabric/common/util"
 	protcommon "github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
@@ -30,10 +29,12 @@ import (
 
 var chaincodeUpgradeCmd *cobra.Command
 
+const upgrade_cmdname = "upgrade"
+
 // upgradeCmd returns the cobra command for Chaincode Upgrade
 func upgradeCmd(cf *ChaincodeCmdFactory) *cobra.Command {
 	chaincodeUpgradeCmd = &cobra.Command{
-		Use:       "upgrade",
+		Use:       upgrade_cmdname,
 		Short:     fmt.Sprintf("Upgrade chaincode."),
 		Long:      fmt.Sprintf(`Upgrade an existing chaincode with the specified one. The new chaincode will immediately replace the existing chaincode upon the transaction committed.`),
 		ValidArgs: []string{"1"},
@@ -52,7 +53,7 @@ func upgrade(cmd *cobra.Command, cf *ChaincodeCmdFactory) (*protcommon.Envelope,
 		return nil, err
 	}
 
-	cds, err := getChaincodeBytes(spec)
+	cds, err := getChaincodeBytes(spec, false)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting chaincode code %s: %s", chainFuncName, err)
 	}
@@ -62,13 +63,11 @@ func upgrade(cmd *cobra.Command, cf *ChaincodeCmdFactory) (*protcommon.Envelope,
 		return nil, fmt.Errorf("Error serializing identity for %s: %s\n", cf.Signer.GetIdentifier(), err)
 	}
 
-	uuid := util.GenerateUUID()
-
-	prop, err := utils.CreateUpgradeProposalFromCDS(uuid, chainID, cds, creator)
+	prop, _, err := utils.CreateUpgradeProposalFromCDS(chainID, cds, creator, policyMarhsalled, []byte(escc), []byte(vscc))
 	if err != nil {
 		return nil, fmt.Errorf("Error creating proposal %s: %s\n", chainFuncName, err)
 	}
-	logger.Debugf("Get upgrade proposal for chaincode <%v>", spec.ChaincodeID)
+	logger.Debugf("Get upgrade proposal for chaincode <%v>", spec.ChaincodeId)
 
 	var signedProp *pb.SignedProposal
 	signedProp, err = utils.GetSignedProposal(prop, cf.Signer)

@@ -22,8 +22,13 @@ import (
 	"sync"
 	"testing"
 
+	"time"
+
+	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/msp/mgmt/testtools"
+	"github.com/hyperledger/fabric/peer/gossip/mcs"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 )
@@ -37,14 +42,15 @@ func TestInitGossipService(t *testing.T) {
 	go grpcServer.Serve(socket)
 	defer grpcServer.Stop()
 
-	mgmt.LoadFakeSetupWithLocalMspAndTestChainMsp("../../msp/sampleconfig")
+	msptesttools.LoadMSPSetupForTesting("../../msp/sampleconfig")
 	identity, _ := mgmt.GetLocalSigningIdentityOrPanic().Serialize()
 
 	wg := sync.WaitGroup{}
 	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func() {
-			InitGossipService(identity, "localhost:5611", grpcServer)
+			InitGossipService(identity, "localhost:5611", grpcServer, mcs.New(&mockpolicies.PolicyManagerMgmt{}))
+
 			wg.Done()
 		}()
 	}
@@ -58,6 +64,8 @@ func TestInitGossipService(t *testing.T) {
 			assert.Equal(t, gossip, GetGossipService())
 		}(gossip)
 	}
+
+	time.Sleep(time.Second * 2)
 }
 
 // Make sure *joinChannelMessage implements the api.JoinChannelMessage

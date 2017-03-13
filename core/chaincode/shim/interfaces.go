@@ -65,24 +65,30 @@ type ChaincodeStubInterface interface {
 	// DelState removes the specified `key` and its value from the ledger.
 	DelState(key string) error
 
-	// RangeQueryState function can be invoked by a chaincode to query of a range
+	// GetStateByRange function can be invoked by a chaincode to query of a range
 	// of keys in the state. Assuming the startKey and endKey are in lexical
 	// an iterator will be returned that can be used to iterate over all keys
 	// between the startKey (inclusive) and endKey (exclusive). The order in which keys are
 	// returned by the iterator is random.
-	RangeQueryState(startKey, endKey string) (StateQueryIteratorInterface, error)
+	GetStateByRange(startKey, endKey string) (StateQueryIteratorInterface, error)
 
-	// PartialCompositeKeyQuery function can be invoked by a chaincode to query the
+	// GetStateByPartialCompositeKey function can be invoked by a chaincode to query the
 	// state based on a given partial composite key. This function returns an
 	// iterator which can be used to iterate over all composite keys whose prefix
 	// matches the given partial composite key. This function should be used only for
 	// a partial composite key. For a full composite key, an iter with empty response
-	// would be returned.
-	PartialCompositeKeyQuery(objectType string, keys []string) (StateQueryIteratorInterface, error)
+	// would be returned. The objectType and attributes are expected to have only
+	// valid utf8 strings and should not contain U+0000 (nil byte) and U+10FFFF (biggest and unallocated code point)
+	GetStateByPartialCompositeKey(objectType string, keys []string) (StateQueryIteratorInterface, error)
 
 	// Given a list of attributes, CreateCompositeKey function combines these attributes
-	// to form a composite key.
+	// to form a composite key. The objectType and attributes are expected to have only
+	// valid utf8 strings and should not contain U+0000 (nil byte) and U+10FFFF (biggest and unallocated code point)
 	CreateCompositeKey(objectType string, attributes []string) (string, error)
+
+	// Given a composite key, SplitCompositeKey function splits the key into attributes
+	// on which the composite key was formed.
+	SplitCompositeKey(compositeKey string) (string, []string, error)
 
 	// GetQueryResult function can be invoked by a chaincode to perform a
 	// rich query against state database.  Only supported by state database implementations
@@ -91,22 +97,26 @@ type ChaincodeStubInterface interface {
 	// the query result set
 	GetQueryResult(query string) (StateQueryIteratorInterface, error)
 
-	// Given a composite key, SplitCompositeKey function splits the key into attributes
-	// on which the composite key was formed.
-	SplitCompositeKey(compositeKey string) (string, []string, error)
+	// GetHistoryForKey function can be invoked by a chaincode to return a history of
+	// key values across time. GetHistoryForKey is intended to be used for read-only queries.
+	GetHistoryForKey(key string) (StateQueryIteratorInterface, error)
 
-	// GetCallerCertificate returns caller certificate
-	GetCallerCertificate() ([]byte, error)
+	// GetCreator returns SignatureHeader.Creator of the proposal
+	// this Stub refers to.
+	GetCreator() ([]byte, error)
 
-	// GetCallerMetadata returns caller metadata
-	GetCallerMetadata() ([]byte, error)
+	// GetTransient returns the ChaincodeProposalPayload.transient field.
+	// It is a map that contains data (e.g. cryptographic material)
+	// that might be used to implement some form of application-level confidentiality. The contents
+	// of this field, as prescribed by ChaincodeProposalPayload, are supposed to always
+	// be omitted from the transaction and excluded from the ledger.
+	GetTransient() (map[string][]byte, error)
 
 	// GetBinding returns the transaction binding
 	GetBinding() ([]byte, error)
 
-	// GetPayload returns transaction payload, which is a `ChaincodeSpec` defined
-	// in fabric/protos/chaincode.proto
-	GetPayload() ([]byte, error)
+	// GetArgsSlice returns the arguments to the stub call as a byte array
+	GetArgsSlice() ([]byte, error)
 
 	// GetTxTimestamp returns transaction created timestamp, which is currently
 	// taken from the peer receiving the transaction. Note that this timestamp

@@ -18,11 +18,12 @@ package historyleveldb
 
 import (
 	"os"
+	"strconv"
 	"testing"
 
 	configtxtest "github.com/hyperledger/fabric/common/configtx/test"
+	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/testutil"
 	"github.com/spf13/viper"
 )
 
@@ -37,60 +38,71 @@ func TestSavepoint(t *testing.T) {
 	env := NewTestHistoryEnv(t)
 	defer env.cleanup()
 
-	// read the savepoint, it should not exist and should return 0
-	blockNum, err := env.TestHistoryDB.GetBlockNumFromSavepoint()
-	testutil.AssertNoError(t, err, "Error upon historyDatabase.GetBlockNumFromSavepoint()")
-	testutil.AssertEquals(t, blockNum, uint64(0))
+	// read the savepoint, it should not exist and should return nil Height object
+	savepoint, err := env.testHistoryDB.GetLastSavepoint()
+	testutil.AssertNoError(t, err, "Error upon historyDatabase.GetLastSavepoint()")
+	testutil.AssertNil(t, savepoint)
 
-	// create a block
-	simulator, _ := env.Txmgr.NewTxSimulator()
+	// create the first block (block 0)
+	simulator, _ := env.txmgr.NewTxSimulator()
 	simulator.SetState("ns1", "key1", []byte("value1"))
 	simulator.Done()
 	simRes, _ := simulator.GetTxSimulationResults()
 	bg := testutil.NewBlockGenerator(t)
 	block1 := bg.NextBlock([][]byte{simRes}, false)
-	err = env.TestHistoryDB.Commit(block1)
+	err = env.testHistoryDB.Commit(block1)
 	testutil.AssertNoError(t, err, "")
 
-	// read the savepoint, it should now exist and return 1
-	blockNum, err = env.TestHistoryDB.GetBlockNumFromSavepoint()
-	testutil.AssertNoError(t, err, "Error upon historyDatabase.GetBlockNumFromSavepoint()")
-	testutil.AssertEquals(t, blockNum, uint64(1))
+	// read the savepoint, it should now exist and return a Height object with BlockNum 0
+	savepoint, err = env.testHistoryDB.GetLastSavepoint()
+	testutil.AssertNoError(t, err, "Error upon historyDatabase.GetLastSavepoint()")
+	testutil.AssertEquals(t, savepoint.BlockNum, uint64(0))
 }
 
 func TestHistory(t *testing.T) {
 
 	env := NewTestHistoryEnv(t)
 	defer env.cleanup()
+	provider := env.testBlockStorageEnv.provider
+	store1, err := provider.OpenBlockStore("ledger1")
+	testutil.AssertNoError(t, err, "Error upon provider.OpenBlockStore()")
+	defer store1.Shutdown()
 
 	//block1
-	simulator, _ := env.Txmgr.NewTxSimulator()
-	simulator.SetState("ns1", "key7", []byte("value1"))
+	simulator, _ := env.txmgr.NewTxSimulator()
+	value1 := []byte("value1")
+	simulator.SetState("ns1", "key7", value1)
 	simulator.Done()
 	simRes, _ := simulator.GetTxSimulationResults()
 	bg := testutil.NewBlockGenerator(t)
 	block1 := bg.NextBlock([][]byte{simRes}, false)
-	err := env.TestHistoryDB.Commit(block1)
+	err = store1.AddBlock(block1)
+	testutil.AssertNoError(t, err, "")
+	err = env.testHistoryDB.Commit(block1)
 	testutil.AssertNoError(t, err, "")
 
 	//block2 tran1
 	simulationResults := [][]byte{}
-	simulator, _ = env.Txmgr.NewTxSimulator()
-	simulator.SetState("ns1", "key7", []byte("value2"))
+	simulator, _ = env.txmgr.NewTxSimulator()
+	value2 := []byte("value2")
+	simulator.SetState("ns1", "key7", value2)
 	simulator.Done()
 	simRes, _ = simulator.GetTxSimulationResults()
 	simulationResults = append(simulationResults, simRes)
 	//block2 tran2
-	simulator2, _ := env.Txmgr.NewTxSimulator()
-	simulator2.SetState("ns1", "key7", []byte("value3"))
+	simulator2, _ := env.txmgr.NewTxSimulator()
+	value3 := []byte("value3")
+	simulator2.SetState("ns1", "key7", value3)
 	simulator2.Done()
 	simRes2, _ := simulator2.GetTxSimulationResults()
 	simulationResults = append(simulationResults, simRes2)
 	block2 := bg.NextBlock(simulationResults, false)
-	err = env.TestHistoryDB.Commit(block2)
+	err = store1.AddBlock(block2)
+	testutil.AssertNoError(t, err, "")
+	err = env.testHistoryDB.Commit(block2)
 	testutil.AssertNoError(t, err, "")
 
-	qhistory, err := env.TestHistoryDB.NewHistoryQueryExecutor()
+	qhistory, err := env.testHistoryDB.NewHistoryQueryExecutor(store1)
 	testutil.AssertNoError(t, err, "Error upon NewHistoryQueryExecutor")
 
 	itr, err2 := qhistory.GetHistoryForKey("ns1", "key7")
@@ -103,13 +115,13 @@ func TestHistory(t *testing.T) {
 			break
 		}
 		txid := kmod.(*ledger.KeyModification).TxID
-		//v := kmod.(*ledger.KeyModification).Value TODO value not populated yet
-		t.Logf("Retrieved history record for key=key7 at TxId=%s", txid)
+		retrievedValue := kmod.(*ledger.KeyModification).Value
+		t.Logf("Retrieved history record for key=key7 at TxId=%s with value %v", txid, retrievedValue)
 		count++
+		expectedValue := []byte("value" + strconv.Itoa(count))
+		testutil.AssertEquals(t, retrievedValue, expectedValue)
 	}
 	testutil.AssertEquals(t, count, 3)
-	// TODO add assertions for exact history values once it is populated
-
 }
 
 //TestSavepoint tests that save points get written after each block and get returned via GetBlockNumfromSavepoint
@@ -120,7 +132,8 @@ func TestHistoryDisabled(t *testing.T) {
 
 	viper.Set("ledger.state.historyDatabase", "false")
 
-	qhistory, err := env.TestHistoryDB.NewHistoryQueryExecutor()
+	//no need to pass blockstore into history executore, it won't be used in this test
+	qhistory, err := env.testHistoryDB.NewHistoryQueryExecutor(nil)
 	testutil.AssertNoError(t, err, "Error upon NewHistoryQueryExecutor")
 
 	_, err2 := qhistory.GetHistoryForKey("ns1", "key7")
@@ -137,6 +150,6 @@ func TestGenesisBlockNoError(t *testing.T) {
 	block, err := configtxtest.MakeGenesisBlock("test_chainid")
 	testutil.AssertNoError(t, err, "")
 
-	err = env.TestHistoryDB.Commit(block)
+	err = env.testHistoryDB.Commit(block)
 	testutil.AssertNoError(t, err, "")
 }

@@ -100,10 +100,9 @@ func main() {
 	flogging.SetLoggingFormat(viper.GetString("logging.format"), logOutput)
 
 	// Init the MSP
-	// TODO: determine the location of this config file
 	var mspMgrConfigDir = viper.GetString("peer.mspConfigPath")
-
-	err = common.InitCrypto(mspMgrConfigDir)
+	var mspID = viper.GetString("peer.localMspId")
+	err = common.InitCrypto(mspMgrConfigDir, mspID)
 	if err != nil { // Handle errors reading the config file
 		panic(err.Error())
 	}

@@ -24,8 +24,10 @@ import (
 
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/factory"
+	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -39,14 +41,14 @@ func TestMain(m *testing.M) {
 	// as the MSP-related classes can be easly mocked.
 
 	mspMgrConfigDir := "./../../../msp/sampleconfig/"
-	err := mgmt.LoadFakeSetupWithLocalMspAndTestChainMsp(mspMgrConfigDir)
+	err := msptesttools.LoadMSPSetupForTesting(mspMgrConfigDir)
 	if err != nil {
 		fmt.Printf("Failed LoadFakeSetupWithLocalMspAndTestChainMsp [%s]", err)
 		os.Exit(-1)
 	}
 
 	// Init the MSP-based MessageCryptoService
-	msgCryptoService = NewMessageCryptoService()
+	msgCryptoService = New(&mockpolicies.PolicyManagerMgmt{})
 
 	os.Exit(m.Run())
 }
@@ -64,7 +66,7 @@ func TestPKIidOfCert(t *testing.T) {
 	// Check pkid is not nil
 	assert.NotNil(t, pkid, "PKID must be different from nil")
 	// Check that pkid is the SHA2-256 of ithe peerIdentity
-	digest, err := factory.GetDefaultOrPanic().Hash(peerIdentity, &bccsp.SHA256Opts{})
+	digest, err := factory.GetDefault().Hash(peerIdentity, &bccsp.SHA256Opts{})
 	assert.NoError(t, err, "Failed computing digest of serialized identity [% x]", []byte(peerIdentity))
 	assert.Equal(t, digest, []byte(pkid), "PKID must be the SHA2-256 of peerIdentity")
 }

@@ -140,15 +140,15 @@ func secondPass(args ...interface{}) (interface{}, error) {
 			/* get the right role */
 			var r common.MSPRole_MSPRoleType
 			if subm[0][3] == "member" {
-				r = common.MSPRole_Member
+				r = common.MSPRole_MEMBER
 			} else {
-				r = common.MSPRole_Admin
+				r = common.MSPRole_ADMIN
 			}
 
 			/* build the principal we've been told */
 			p := &common.MSPPrincipal{
-				PrincipalClassification: common.MSPPrincipal_ByMSPRole,
-				Principal:               utils.MarshalOrPanic(&common.MSPRole{MSPIdentifier: subm[0][1], Role: r})}
+				PrincipalClassification: common.MSPPrincipal_ROLE,
+				Principal:               utils.MarshalOrPanic(&common.MSPRole{MspIdentifier: subm[0][1], Role: r})}
 			ctx.principals = append(ctx.principals, p)
 
 			/* create a SignaturePolicy that requires a signature from

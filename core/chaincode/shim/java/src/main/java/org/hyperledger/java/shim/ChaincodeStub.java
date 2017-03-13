@@ -20,7 +20,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.hyperledger.protos.Chaincode;
+import org.hyperledger.protos.Chaincodeshim;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -84,25 +84,25 @@ public class ChaincodeStub {
      * @param endKey
      * @return
      */
-    public Map<String, String> rangeQueryState(String startKey, String endKey) {
+    public Map<String, String> getStateByRange(String startKey, String endKey) {
         Map<String, String> retMap = new HashMap<>();
-        for (Map.Entry<String, ByteString> item : rangeQueryRawState(startKey, endKey).entrySet()) {
+        for (Map.Entry<String, ByteString> item : getStateByRangeRaw(startKey, endKey).entrySet()) {
             retMap.put(item.getKey(), item.getValue().toStringUtf8());
         }
         return retMap;
     }
 
     /**
-     * This method is same as rangeQueryState, except it returns value in ByteString, useful in cases where
+     * This method is same as getStateByRange, except it returns value in ByteString, useful in cases where
      * serialized object can be retrieved.
      *
      * @param startKey
      * @param endKey
      * @return
      */
-    public Map<String, ByteString> rangeQueryRawState(String startKey, String endKey) {
+    public Map<String, ByteString> getStateByRangeRaw(String startKey, String endKey) {
         Map<String, ByteString> map = new HashMap<>();
-        for (Chaincode.QueryStateKeyValue mapping : handler.handleRangeQueryState(
+        for (Chaincodeshim.QueryStateKeyValue mapping : handler.handleGetStateByRange(
                 startKey, endKey, uuid).getKeysAndValuesList()) {
             map.put(mapping.getKey(), mapping.getValue());
         }
@@ -119,10 +119,10 @@ public class ChaincodeStub {
      * @param endKey
      * @return
      */
-    public Map<String, String> partialCompositeKeyQuery(String objectType, String[] attributes) {
+    public Map<String, String> getStateByPartialCompositeKey(String objectType, String[] attributes) {
         String partialCompositeKey = new String();
         partialCompositeKey = createCompositeKey(objectType, attributes);
-        return rangeQueryState(partialCompositeKey+"1", partialCompositeKey+":");
+        return getStateByRange(partialCompositeKey+"1", partialCompositeKey+":");
     }
 
      /**
@@ -176,8 +176,8 @@ public class ChaincodeStub {
      * @param limit
      * @return
      */
-//	public RangeQueryStateResponse rangeQueryRawState(String startKey, String endKey, int limit) {
-//		return handler.handleRangeQueryState(startKey, endKey, limit, uuid);
+//	public GetStateByRangeResponse getStateByRangeRaw(String startKey, String endKey, int limit) {
+//		return handler.handleGetStateByRange(startKey, endKey, limit, uuid);
 //	}
 
     /**

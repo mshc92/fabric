@@ -21,14 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
+	configvaluesapi "github.com/hyperledger/fabric/common/configvalues"
+	mockconfigvaluesorderer "github.com/hyperledger/fabric/common/mocks/configvalues/channel/orderer"
+	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/common/policies"
-	"github.com/hyperledger/fabric/orderer/common/bootstrap/provisional"
-	"github.com/hyperledger/fabric/orderer/common/sharedconfig"
 	ordererledger "github.com/hyperledger/fabric/orderer/ledger"
 	ramledger "github.com/hyperledger/fabric/orderer/ledger/ram"
-	"github.com/hyperledger/fabric/orderer/localconfig"
-	mockpolicies "github.com/hyperledger/fabric/orderer/mocks/policies"
-	mocksharedconfig "github.com/hyperledger/fabric/orderer/mocks/sharedconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
@@ -36,7 +35,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var genesisBlock *cb.Block
+var genesisBlock = cb.NewBlock(0, nil)
 
 var systemChainID = "systemChain"
 
@@ -44,7 +43,6 @@ const ledgerSize = 10
 
 func init() {
 	logging.SetLevel(logging.DEBUG, "")
-	genesisBlock = provisional.New(config.Load()).GenesisBlock()
 }
 
 type mockD struct {
@@ -84,7 +82,7 @@ func (mm *mockSupportManager) GetChain(chainID string) (Support, bool) {
 
 type mockSupport struct {
 	ledger        ordererledger.ReadWriter
-	sharedConfig  *mocksharedconfig.Manager
+	sharedConfig  *mockconfigvaluesorderer.SharedConfig
 	policyManager *mockpolicies.Manager
 }
 
@@ -103,7 +101,7 @@ func NewRAMLedger() ordererledger.ReadWriter {
 	return rl
 }
 
-func (mcs *mockSupport) SharedConfig() sharedconfig.Manager {
+func (mcs *mockSupport) SharedConfig() configvaluesapi.Orderer {
 	return mcs.sharedConfig
 }
 
@@ -114,7 +112,7 @@ func newMockMultichainManager() *mockSupportManager {
 	}
 	mm.chains[systemChainID] = &mockSupport{
 		ledger:        rl,
-		sharedConfig:  &mocksharedconfig.Manager{EgressPolicyNamesVal: []string{"somePolicy"}},
+		sharedConfig:  &mockconfigvaluesorderer.SharedConfig{EgressPolicyNamesVal: []string{"somePolicy"}},
 		policyManager: &mockpolicies.Manager{Policy: &mockpolicies.Policy{}},
 	}
 	return mm
@@ -131,10 +129,10 @@ func makeSeek(chainID string, seekInfo *ab.SeekInfo) *cb.Envelope {
 	return &cb.Envelope{
 		Payload: utils.MarshalOrPanic(&cb.Payload{
 			Header: &cb.Header{
-				ChainHeader: &cb.ChainHeader{
-					ChainID: chainID,
-				},
-				SignatureHeader: &cb.SignatureHeader{},
+				ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+					ChannelId: chainID,
+				}),
+				SignatureHeader: utils.MarshalOrPanic(&cb.SignatureHeader{}),
 			},
 			Data: utils.MarshalOrPanic(seekInfo),
 		}),

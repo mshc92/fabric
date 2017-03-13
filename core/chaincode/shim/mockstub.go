@@ -188,7 +188,7 @@ func (stub *MockStub) DelState(key string) error {
 	return nil
 }
 
-func (stub *MockStub) RangeQueryState(startKey, endKey string) (StateQueryIteratorInterface, error) {
+func (stub *MockStub) GetStateByRange(startKey, endKey string) (StateQueryIteratorInterface, error) {
 	return NewMockStateRangeQueryIterator(stub, startKey, endKey), nil
 }
 
@@ -204,26 +204,32 @@ func (stub *MockStub) GetQueryResult(query string) (StateQueryIteratorInterface,
 	return nil, errors.New("Not Implemented")
 }
 
-//PartialCompositeKeyQuery function can be invoked by a chaincode to query the
+// GetHistoryForKey function can be invoked by a chaincode to return a history of
+// key values across time. GetHistoryForKey is intended to be used for read-only queries.
+func (stub *MockStub) GetHistoryForKey(key string) (StateQueryIteratorInterface, error) {
+	return nil, errors.New("Not Implemented")
+}
+
+//GetStateByPartialCompositeKey function can be invoked by a chaincode to query the
 //state based on a given partial composite key. This function returns an
 //iterator which can be used to iterate over all composite keys whose prefix
 //matches the given partial composite key. This function should be used only for
 //a partial composite key. For a full composite key, an iter with empty response
 //would be returned.
-func (stub *MockStub) PartialCompositeKeyQuery(objectType string, attributes []string) (StateQueryIteratorInterface, error) {
-	return partialCompositeKeyQuery(stub, objectType, attributes)
+func (stub *MockStub) GetStateByPartialCompositeKey(objectType string, attributes []string) (StateQueryIteratorInterface, error) {
+	return getStateByPartialCompositeKey(stub, objectType, attributes)
 }
 
 // CreateCompositeKey combines the list of attributes
 //to form a composite key.
 func (stub *MockStub) CreateCompositeKey(objectType string, attributes []string) (string, error) {
-	return createCompositeKey(stub, objectType, attributes)
+	return createCompositeKey(objectType, attributes)
 }
 
 // SplitCompositeKey splits the composite key into attributes
 // on which the composite key was formed.
 func (stub *MockStub) SplitCompositeKey(compositeKey string) (string, []string, error) {
-	return splitCompositeKey(stub, compositeKey)
+	return splitCompositeKey(compositeKey)
 }
 
 // InvokeChaincode calls a peered chaincode.
@@ -245,12 +251,12 @@ func (stub *MockStub) InvokeChaincode(chaincodeName string, args [][]byte, chann
 }
 
 // Not implemented
-func (stub *MockStub) GetCallerCertificate() ([]byte, error) {
+func (stub *MockStub) GetCreator() ([]byte, error) {
 	return nil, nil
 }
 
 // Not implemented
-func (stub *MockStub) GetCallerMetadata() ([]byte, error) {
+func (stub *MockStub) GetTransient() (map[string][]byte, error) {
 	return nil, nil
 }
 
@@ -260,7 +266,7 @@ func (stub *MockStub) GetBinding() ([]byte, error) {
 }
 
 // Not implemented
-func (stub *MockStub) GetPayload() ([]byte, error) {
+func (stub *MockStub) GetArgsSlice() ([]byte, error) {
 	return nil, nil
 }
 
@@ -315,6 +321,10 @@ func (iter *MockStateRangeQueryIterator) HasNext() bool {
 
 	current := iter.Current
 	for current != nil {
+		// if this is an open-ended query for all keys, return true
+		if iter.StartKey == "" && iter.EndKey == "" {
+			return true
+		}
 		comp1 := strings.Compare(current.Value.(string), iter.StartKey)
 		comp2 := strings.Compare(current.Value.(string), iter.EndKey)
 		if comp1 >= 0 {
@@ -350,7 +360,9 @@ func (iter *MockStateRangeQueryIterator) Next() (string, []byte, error) {
 	for iter.Current != nil {
 		comp1 := strings.Compare(iter.Current.Value.(string), iter.StartKey)
 		comp2 := strings.Compare(iter.Current.Value.(string), iter.EndKey)
-		if comp1 >= 0 && comp2 <= 0 {
+		// compare to start and end keys. or, if this is an open-ended query for
+		// all keys, it should always return the key and value
+		if (comp1 >= 0 && comp2 <= 0) || (iter.StartKey == "" && iter.EndKey == "") {
 			key := iter.Current.Value.(string)
 			value, err := iter.Stub.GetState(key)
 			iter.Current = iter.Current.Next()

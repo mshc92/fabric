@@ -45,11 +45,19 @@ PROJECT_VERSION=$(BASE_VERSION)
 endif
 
 PKGNAME = github.com/$(PROJECT_NAME)
-GO_LDFLAGS = -X $(PKGNAME)/common/metadata.Version=$(PROJECT_VERSION)
 CGO_FLAGS = CGO_CFLAGS=" "
 ARCH=$(shell uname -m)
-CHAINTOOL_RELEASE=v0.10.0
+CHAINTOOL_RELEASE=v0.10.2
 BASEIMAGE_RELEASE=$(shell cat ./.baseimage-release)
+
+# defined in common/metadata/metadata.go
+METADATA_VAR = Version=$(PROJECT_VERSION)
+METADATA_VAR += BaseVersion=$(BASEIMAGE_RELEASE)
+METADATA_VAR += BaseDockerLabel=$(BASE_DOCKER_LABEL)
+
+GO_LDFLAGS = $(patsubst %,-X $(PKGNAME)/common/metadata.%,$(METADATA_VAR))
+
+CHAINTOOL_URL ?= https://github.com/hyperledger/fabric-chaintool/releases/download/$(CHAINTOOL_RELEASE)/chaintool
 
 export GO_LDFLAGS
 
@@ -57,14 +65,14 @@ EXECUTABLES = go docker git curl
 K := $(foreach exec,$(EXECUTABLES),\
 	$(if $(shell which $(exec)),some string,$(error "No $(exec) in PATH: Check dependencies")))
 
-GOSHIM_DEPS = $(shell ./scripts/goListFiles.sh $(PKGNAME)/core/chaincode/shim | sort | uniq)
+GOSHIM_DEPS = $(shell ./scripts/goListFiles.sh $(PKGNAME)/core/chaincode/shim)
 JAVASHIM_DEPS =  $(shell git ls-files core/chaincode/shim/java)
 PROTOS = $(shell git ls-files *.proto | grep -v vendor)
-MSP_SAMPLECONFIG = $(shell git ls-files msp/sampleconfig/*.pem)
-GENESIS_SAMPLECONFIG = $(shell git ls-files common/configtx/test/*.template)
+MSP_SAMPLECONFIG = $(shell git ls-files msp/sampleconfig/*)
 PROJECT_FILES = $(shell git ls-files)
-IMAGES = peer orderer ccenv javaenv testenv zookeeper kafka
+IMAGES = peer orderer ccenv javaenv buildenv testenv zookeeper kafka couchdb
 
+pkgmap.configtxgen    := $(PKGNAME)/common/configtx/tool/configtxgen
 pkgmap.peer           := $(PKGNAME)/peer
 pkgmap.orderer        := $(PKGNAME)/orderer
 pkgmap.block-listener := $(PKGNAME)/examples/events/block-listener
@@ -95,9 +103,17 @@ peer-docker: build/image/peer/$(DUMMY)
 orderer: build/bin/orderer
 orderer-docker: build/image/orderer/$(DUMMY)
 
+.PHONY: configtxgen
+configtxgen: build/bin/configtxgen
+
+buildenv: build/image/buildenv/$(DUMMY)
+
+build/image/testenv/$(DUMMY): build/image/buildenv/$(DUMMY)
 testenv: build/image/testenv/$(DUMMY)
 
-unit-test: peer-docker testenv
+couchdb: build/image/couchdb/$(DUMMY)
+
+unit-test: peer-docker testenv couchdb
 	cd unit-test && docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
 
 unit-tests: unit-test
@@ -117,14 +133,14 @@ behave: behave-deps
 	@echo "Running behave tests"
 	@cd bddtests; behave $(BEHAVE_OPTS)
 
-linter: testenv
+linter: buildenv
 	@echo "LINT: Running code checks.."
-	@$(DRUN) hyperledger/fabric-testenv:$(DOCKER_TAG) ./scripts/golinter.sh
+	@$(DRUN) hyperledger/fabric-buildenv:$(DOCKER_TAG) ./scripts/golinter.sh
 
 %/chaintool: Makefile
 	@echo "Installing chaintool"
 	@mkdir -p $(@D)
-	curl -L https://github.com/hyperledger/fabric-chaintool/releases/download/$(CHAINTOOL_RELEASE)/chaintool > $@
+	curl -L $(CHAINTOOL_URL) > $@
 	chmod +x $@
 
 # We (re)build a package within a docker context but persist the $GOPATH/pkg
@@ -174,13 +190,16 @@ build/image/javaenv/payload:    build/javashim.tar.bz2 \
 build/image/peer/payload:       build/docker/bin/peer \
 				peer/core.yaml \
 				build/msp-sampleconfig.tar.bz2 \
-				build/genesis-sampleconfig.tar.bz2
+				common/configtx/tool/configtx.yaml
 build/image/orderer/payload:    build/docker/bin/orderer \
 				build/msp-sampleconfig.tar.bz2 \
-				orderer/orderer.yaml
-build/image/testenv/payload:    build/gotools.tar.bz2 \
-				build/docker/bin/orderer \
 				orderer/orderer.yaml \
+				common/configtx/tool/configtx.yaml
+build/image/buildenv/payload:   build/gotools.tar.bz2 \
+				build/docker/gotools/bin/protoc-gen-go
+build/image/testenv/payload:    build/docker/bin/orderer \
+				orderer/orderer.yaml \
+				common/configtx/tool/configtx.yaml \
 				build/docker/bin/peer \
 				peer/core.yaml \
 				build/msp-sampleconfig.tar.bz2 \
@@ -188,6 +207,9 @@ build/image/testenv/payload:    build/gotools.tar.bz2 \
 build/image/zookeeper/payload:  images/zookeeper/docker-entrypoint.sh
 build/image/kafka/payload:      images/kafka/docker-entrypoint.sh \
 				images/kafka/kafka-run-class.sh
+build/image/couchdb/payload:	images/couchdb/docker-entrypoint.sh \
+				images/couchdb/local.ini \
+				images/couchdb/vm.args
 
 build/image/%/payload:
 	mkdir -p $@
@@ -200,6 +222,8 @@ build/image/%/Dockerfile: images/%/Dockerfile.in
 		| sed -e 's/_BASE_TAG_/$(BASE_DOCKER_TAG)/g' \
 		| sed -e 's/_TAG_/$(DOCKER_TAG)/g' \
 		> $@
+	@echo LABEL $(BASE_DOCKER_LABEL).version=$(PROJECT_VERSION) \\>>$@
+	@echo "     " $(BASE_DOCKER_LABEL).base.version=$(BASEIMAGE_RELEASE)>>$@
 
 build/image/%/$(DUMMY): Makefile build/image/%/payload build/image/%/Dockerfile
 	$(eval TARGET = ${patsubst build/image/%/$(DUMMY),%,${@}})
@@ -218,15 +242,14 @@ build/goshim.tar.bz2: $(GOSHIM_DEPS)
 build/javashim.tar.bz2: $(JAVASHIM_DEPS)
 build/protos.tar.bz2: $(PROTOS)
 build/msp-sampleconfig.tar.bz2: $(MSP_SAMPLECONFIG)
-build/genesis-sampleconfig.tar.bz2: $(GENESIS_SAMPLECONFIG)
 
 build/%.tar.bz2:
 	@echo "Creating $@"
 	@tar -jc $^ > $@
 
 .PHONY: protos
-protos: testenv
-	@$(DRUN) hyperledger/fabric-testenv:$(DOCKER_TAG) ./scripts/compile_protos.sh
+protos: buildenv
+	@$(DRUN) hyperledger/fabric-buildenv:$(DOCKER_TAG) ./scripts/compile_protos.sh
 
 %-docker-clean:
 	$(eval TARGET = ${patsubst %-docker-clean,%,${@}})

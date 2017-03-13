@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/hyperledger/fabric/orderer/common/bootstrap/provisional"
+	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
 	"github.com/hyperledger/fabric/orderer/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
@@ -43,10 +43,10 @@ func seekHelper(chainID string, start *ab.SeekPosition) *cb.Envelope {
 	return &cb.Envelope{
 		Payload: utils.MarshalOrPanic(&cb.Payload{
 			Header: &cb.Header{
-				ChainHeader: &cb.ChainHeader{
-					ChainID: chainID,
-				},
-				SignatureHeader: &cb.SignatureHeader{},
+				ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+					ChannelId: chainID,
+				}),
+				SignatureHeader: utils.MarshalOrPanic(&cb.SignatureHeader{}),
 			},
 
 			Data: utils.MarshalOrPanic(&ab.SeekInfo{

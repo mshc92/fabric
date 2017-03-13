@@ -23,6 +23,11 @@ import (
 	"sync"
 
 	"github.com/hyperledger/fabric/common/configtx"
+	configtxapi "github.com/hyperledger/fabric/common/configtx/api"
+	configvaluesapi "github.com/hyperledger/fabric/common/configvalues"
+	mockconfigtx "github.com/hyperledger/fabric/common/mocks/configtx"
+	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/committer"
 	"github.com/hyperledger/fabric/core/committer/txvalidator"
@@ -30,8 +35,8 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/gossip/service"
 	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
-	"github.com/hyperledger/fabric/peer/sharedconfig"
 	"github.com/hyperledger/fabric/protos/common"
+	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/op/go-logging"
 	"github.com/spf13/viper"
@@ -41,8 +46,8 @@ import (
 var peerLogger = logging.MustGetLogger("peer")
 
 type chainSupport struct {
-	configtx.Manager
-	sharedconfig.Descriptor
+	configtxapi.Manager
+	configvaluesapi.Application
 	ledger ledger.PeerLedger
 }
 
@@ -90,18 +95,18 @@ func Initialize(init func(string)) {
 		peerLogger.Infof("Loading chain %s", cid)
 		if ledger, err = ledgermgmt.OpenLedger(cid); err != nil {
 			peerLogger.Warningf("Failed to load ledger %s(%s)", cid, err)
-			peerLogger.Debug("Error while loading ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
+			peerLogger.Debugf("Error while loading ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
 			continue
 		}
 		if cb, err = getCurrConfigBlockFromLedger(ledger); err != nil {
-			peerLogger.Warningf("Failed to find configuration block on ledger %s(%s)", cid, err)
-			peerLogger.Debug("Error while looking for config block on ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
+			peerLogger.Warningf("Failed to find config block on ledger %s(%s)", cid, err)
+			peerLogger.Debugf("Error while looking for config block on ledger %s with message %s. We continue to the next ledger rather than abort.", cid, err)
 			continue
 		}
 		// Create a chain if we get a valid ledger with config block
 		if err = createChain(cid, ledger, cb); err != nil {
 			peerLogger.Warningf("Failed to load chain %s(%s)", cid, err)
-			peerLogger.Debug("Error reloading chain %s with message %s. We continue to the next chain rather than abort.", cid, err)
+			peerLogger.Debugf("Error reloading chain %s with message %s. We continue to the next chain rather than abort.", cid, err)
 			continue
 		}
 
@@ -119,7 +124,7 @@ func InitChain(cid string) {
 }
 
 func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, error) {
-	// Configuration blocks contain only 1 transaction, so we look for 1-tx
+	// Config blocks contain only 1 transaction, so we look for 1-tx
 	// blocks and check the transaction type
 	var envelope *common.Envelope
 	var tx *common.Payload
@@ -141,56 +146,56 @@ func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, erro
 				currBlockNumber = block.Header.Number - 1
 				continue
 			}
-			if tx.Header.ChainHeader.Type == int32(common.HeaderType_CONFIGURATION_TRANSACTION) {
+			chdr, err := utils.UnmarshalChannelHeader(tx.Header.ChannelHeader)
+			if err != nil {
+				peerLogger.Warning("Failed to get ChannelHeader from Block %d, error %s.", block.Header.Number, err)
+				currBlockNumber = block.Header.Number - 1
+				continue
+			}
+			if chdr.Type == int32(common.HeaderType_CONFIG) {
 				return block, nil
 			}
 		}
 		currBlockNumber = block.Header.Number - 1
 	}
-	return nil, fmt.Errorf("Failed to find configuration block.")
+	return nil, fmt.Errorf("Failed to find config block.")
 }
 
 // createChain creates a new chain object and insert it into the chains
 func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
 
-	configEnvelope, _, err := utils.BreakOutBlockToConfigurationEnvelope(cb)
+	configEnvelope, err := configtx.ConfigEnvelopeFromBlock(cb)
 	if err != nil {
 		return err
 	}
 
-	sharedConfigHandler := sharedconfig.NewDescriptorImpl()
+	configtxInitializer := configtx.NewInitializer()
 
 	gossipEventer := service.GetGossipService().NewConfigEventer()
 
-	gossipCallbackWrapper := func(cm configtx.Manager) {
+	gossipCallbackWrapper := func(cm configtxapi.Manager) {
 		gossipEventer.ProcessConfigUpdate(&chainSupport{
-			Manager:    cm,
-			Descriptor: sharedConfigHandler,
+			Manager:     cm,
+			Application: configtxInitializer.ApplicationConfig(),
 		})
 	}
 
-	configtxInitializer := configtx.NewInitializer()
-	configtxInitializer.Handlers()[common.ConfigurationItem_Peer] = sharedConfigHandler
 	configtxManager, err := configtx.NewManagerImpl(
 		configEnvelope,
 		configtxInitializer,
-		[]func(cm configtx.Manager){gossipCallbackWrapper},
+		[]func(cm configtxapi.Manager){gossipCallbackWrapper},
 	)
 	if err != nil {
 		return err
 	}
 
 	// TODO remove once all references to mspmgmt are gone from peer code
-	// MSP is now initialized above in configtx.Manager
-	_, err = mspmgmt.GetMSPManagerFromBlock(cid, cb)
-	if err != nil {
-		return err
-	}
+	mspmgmt.XXXSetMSPManager(cid, configtxManager.MSPManager())
 
 	cs := &chainSupport{
-		Manager:    configtxManager,
-		Descriptor: sharedConfigHandler,
-		ledger:     ledger,
+		Manager:     configtxManager,
+		Application: configtxManager.ApplicationConfig(), // TODO, refactor as this is accessible through Manager
+		ledger:      ledger,
 	}
 
 	c := committer.NewLedgerCommitter(ledger, txvalidator.NewTxValidator(cs))
@@ -233,9 +238,22 @@ func MockCreateChain(cid string) error {
 		return err
 	}
 
+	i := mockconfigtx.Initializer{
+		Resources: mockconfigtx.Resources{
+			PolicyManagerVal: &mockpolicies.Manager{
+				Policy: &mockpolicies.Policy{},
+			},
+		},
+	}
+
 	chains.Lock()
 	defer chains.Unlock()
-	chains.list[cid] = &chain{cs: &chainSupport{ledger: ledger}}
+	chains.list[cid] = &chain{
+		cs: &chainSupport{
+			ledger:  ledger,
+			Manager: &mockconfigtx.Manager{Initializer: i},
+		},
+	}
 
 	return nil
 }
@@ -251,13 +269,13 @@ func GetLedger(cid string) ledger.PeerLedger {
 	return nil
 }
 
-// GetCommitter returns the committer of the chain with chain ID. Note that this
+// GetPolicyManager returns the policy manager of the chain with chain ID. Note that this
 // call returns nil if chain cid has not been created.
-func GetCommitter(cid string) committer.Committer {
+func GetPolicyManager(cid string) policies.Manager {
 	chains.RLock()
 	defer chains.RUnlock()
 	if c, ok := chains.list[cid]; ok {
-		return c.committer
+		return c.cs.PolicyManager()
 	}
 	return nil
 }
@@ -279,10 +297,10 @@ func SetCurrConfigBlock(block *common.Block, cid string) error {
 	defer chains.Unlock()
 	if c, ok := chains.list[cid]; ok {
 		c.cb = block
-		// TODO: Change MSP configuration
+		// TODO: Change MSP config
 		// c.mspmgr.Reconfig(block)
 
-		// TODO: Change gossip configurations
+		// TODO: Change gossip configs
 		return nil
 	}
 	return fmt.Errorf("Chain %s doesn't exist on the peer", cid)
@@ -325,4 +343,60 @@ func NewPeerClientConnectionWithAddress(peerAddress string) (*grpc.ClientConn, e
 		return comm.NewClientConnectionWithAddress(peerAddress, true, true, comm.InitTLSForPeer())
 	}
 	return comm.NewClientConnectionWithAddress(peerAddress, true, false, nil)
+}
+
+// GetChannelsInfo returns an array with information about all channels for
+// this peer
+func GetChannelsInfo() []*pb.ChannelInfo {
+	// array to store metadata for all channels
+	var channelInfoArray []*pb.ChannelInfo
+
+	chains.RLock()
+	defer chains.RUnlock()
+	for key := range chains.list {
+		channelInfo := &pb.ChannelInfo{ChannelId: key}
+
+		// add this specific chaincode's metadata to the array of all chaincodes
+		channelInfoArray = append(channelInfoArray, channelInfo)
+	}
+
+	return channelInfoArray
+}
+
+// GetPolicyManagerMgmt returns a special PolicyManager whose
+// only function is to give access to the policy manager of
+// a given channel. If the channel does not exists then,
+// it returns nil.
+// The only method implemented is therefore 'Manager'.
+func GetPolicyManagerMgmt() policies.Manager {
+	return &policyManagerMgmt{}
+}
+
+type policyManagerMgmt struct{}
+
+func (c *policyManagerMgmt) GetPolicy(id string) (policies.Policy, bool) {
+	panic("implement me")
+}
+
+// Manager returns the policy manager associated to a channel
+// specified by a path of length 1 that has the name of the channel as the only
+// coordinate available.
+// If the path has length different from 1, then the method returns (nil, false).
+// If the channel does not exists, then the method returns (nil, false)
+// Nothing is created.
+func (c *policyManagerMgmt) Manager(path []string) (policies.Manager, bool) {
+	if len(path) != 1 {
+		return nil, false
+	}
+
+	policyManager := GetPolicyManager(path[0])
+	return policyManager, policyManager != nil
+}
+
+func (c *policyManagerMgmt) BasePath() string {
+	panic("implement me")
+}
+
+func (c *policyManagerMgmt) PolicyNames() []string {
+	panic("implement me")
 }

@@ -25,11 +25,14 @@ import (
 	"github.com/hyperledger/fabric/gossip/api"
 	gossipCommon "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip"
+	"github.com/hyperledger/fabric/gossip/identity"
 	"github.com/hyperledger/fabric/gossip/integration"
-	"github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/gossip/state"
+	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/peer/gossip/sa"
 	"github.com/hyperledger/fabric/protos/common"
-	"github.com/op/go-logging"
+	proto "github.com/hyperledger/fabric/protos/gossip"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 )
 
@@ -74,6 +77,9 @@ type gossipServiceImpl struct {
 	deliveryService deliverclient.DeliverService
 	deliveryFactory DeliveryServiceFactory
 	lock            sync.RWMutex
+	msgCrypto       identity.Mapper
+	peerIdentity    []byte
+	secAdv          api.SecurityAdvisor
 }
 
 // This is an implementation of api.JoinChannelMessage.
@@ -90,16 +96,16 @@ func (jcm *joinChannelMessage) AnchorPeers() []api.AnchorPeer {
 	return jcm.anchorPeers
 }
 
-var logger = logging.MustGetLogger("gossipService")
+var logger = util.GetLogger(util.LoggingServiceModule, "")
 
 // InitGossipService initialize gossip service
-func InitGossipService(identity []byte, endpoint string, s *grpc.Server, bootPeers ...string) {
-	InitGossipServiceCustomDeliveryFactory(identity, endpoint, s, &deliveryFactoryImpl{}, bootPeers...)
+func InitGossipService(peerIdentity []byte, endpoint string, s *grpc.Server, mcs api.MessageCryptoService, bootPeers ...string) {
+	InitGossipServiceCustomDeliveryFactory(peerIdentity, endpoint, s, &deliveryFactoryImpl{}, mcs, bootPeers...)
 }
 
 // InitGossipService initialize gossip service with customize delivery factory
 // implementation, might be useful for testing and mocking purposes
-func InitGossipServiceCustomDeliveryFactory(identity []byte, endpoint string, s *grpc.Server, factory DeliveryServiceFactory, bootPeers ...string) {
+func InitGossipServiceCustomDeliveryFactory(peerIdentity []byte, endpoint string, s *grpc.Server, factory DeliveryServiceFactory, mcs api.MessageCryptoService, bootPeers ...string) {
 	once.Do(func() {
 		logger.Info("Initialize gossip with endpoint", endpoint, "and bootstrap set", bootPeers)
 		dialOpts := []grpc.DialOption{}
@@ -109,11 +115,29 @@ func InitGossipServiceCustomDeliveryFactory(identity []byte, endpoint string, s 
 			dialOpts = append(dialOpts, grpc.WithInsecure())
 		}
 
-		gossip := integration.NewGossipComponent(identity, endpoint, s, dialOpts, bootPeers...)
+		secAdv := sa.NewSecurityAdvisor()
+
+		if overrideEndpoint := viper.GetString("peer.gossip.endpoint"); overrideEndpoint != "" {
+			endpoint = overrideEndpoint
+		}
+
+		if viper.GetBool("peer.gossip.ignoreSecurity") {
+			sec := &secImpl{[]byte(endpoint)}
+			mcs = sec
+			secAdv = sec
+			peerIdentity = []byte(endpoint)
+		}
+
+		idMapper := identity.NewIdentityMapper(mcs)
+
+		gossip := integration.NewGossipComponent(peerIdentity, endpoint, s, secAdv, mcs, idMapper, dialOpts, bootPeers...)
 		gossipServiceInstance = &gossipServiceImpl{
 			gossipSvc:       gossip,
 			chains:          make(map[string]state.GossipStateProvider),
 			deliveryFactory: factory,
+			msgCrypto:       idMapper,
+			peerIdentity:    peerIdentity,
+			secAdv:          secAdv,
 		}
 	})
 }
@@ -154,14 +178,22 @@ func (g *gossipServiceImpl) InitializeChannel(chainID string, committer committe
 
 // configUpdated constructs a joinChannelMessage and sends it to the gossipSvc
 func (g *gossipServiceImpl) configUpdated(config Config) {
+	myOrg := string(g.secAdv.OrgByPeerIdentity(api.PeerIdentityType(g.peerIdentity)))
+	if !g.amIinChannel(myOrg, config) {
+		logger.Error("Tried joining channel", config.ChainID(), "but our org(", myOrg, "), isn't "+
+			"among the orgs of the channel:", orgListFromConfig(config), ", aborting.")
+		return
+	}
 	jcm := &joinChannelMessage{seqNum: config.Sequence(), anchorPeers: []api.AnchorPeer{}}
-	for _, ap := range config.AnchorPeers() {
-		anchorPeer := api.AnchorPeer{
-			Host: ap.Host,
-			Port: int(ap.Port),
-			Cert: api.PeerIdentityType(ap.Cert),
+	for orgID, appOrg := range config.Organizations() {
+		for _, ap := range appOrg.AnchorPeers() {
+			anchorPeer := api.AnchorPeer{
+				Host:  ap.Host,
+				Port:  int(ap.Port),
+				OrgID: api.OrgIdentityType(orgID),
+			}
+			jcm.anchorPeers = append(jcm.anchorPeers, anchorPeer)
 		}
-		jcm.anchorPeers = append(jcm.anchorPeers, anchorPeer)
 	}
 
 	// Initialize new state provider for given committer
@@ -195,4 +227,53 @@ func (g *gossipServiceImpl) Stop() {
 	if g.deliveryService != nil {
 		g.deliveryService.Stop()
 	}
+}
+
+func (g *gossipServiceImpl) amIinChannel(myOrg string, config Config) bool {
+	for _, orgName := range orgListFromConfig(config) {
+		if orgName == myOrg {
+			return true
+		}
+	}
+	return false
+}
+
+func orgListFromConfig(config Config) []string {
+	var orgList []string
+	for orgName := range config.Organizations() {
+		orgList = append(orgList, orgName)
+	}
+	return orgList
+}
+
+type secImpl struct {
+	identity []byte
+}
+
+func (*secImpl) OrgByPeerIdentity(api.PeerIdentityType) api.OrgIdentityType {
+	return api.OrgIdentityType("DEFAULT")
+}
+
+func (s *secImpl) GetPKIidOfCert(peerIdentity api.PeerIdentityType) gossipCommon.PKIidType {
+	return gossipCommon.PKIidType(peerIdentity)
+}
+
+func (s *secImpl) VerifyBlock(chainID gossipCommon.ChainID, signedBlock api.SignedBlock) error {
+	return nil
+}
+
+func (s *secImpl) Sign(msg []byte) ([]byte, error) {
+	return msg, nil
+}
+
+func (s *secImpl) Verify(peerIdentity api.PeerIdentityType, signature, message []byte) error {
+	return nil
+}
+
+func (s *secImpl) VerifyByChannel(chainID gossipCommon.ChainID, peerIdentity api.PeerIdentityType, signature, message []byte) error {
+	return nil
+}
+
+func (s *secImpl) ValidateIdentity(peerIdentity api.PeerIdentityType) error {
+	return nil
 }

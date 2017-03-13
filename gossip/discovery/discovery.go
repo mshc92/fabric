@@ -18,32 +18,32 @@ package discovery
 
 import (
 	"github.com/hyperledger/fabric/gossip/common"
-	"github.com/hyperledger/fabric/gossip/proto"
+	proto "github.com/hyperledger/fabric/protos/gossip"
 )
 
 // CryptoService is an interface that the discovery expects to be implemented and passed on creation
 type CryptoService interface {
 	// ValidateAliveMsg validates that an Alive message is authentic
-	ValidateAliveMsg(*proto.GossipMessage) bool
+	ValidateAliveMsg(message *proto.SignedGossipMessage) bool
 
 	// SignMessage signs a message
-	SignMessage(m *proto.GossipMessage) *proto.GossipMessage
+	SignMessage(m *proto.GossipMessage, internalEndpoint string) *proto.Envelope
 }
 
 // CommService is an interface that the discovery expects to be implemented and passed on creation
 type CommService interface {
 	// Gossip gossips a message
-	Gossip(msg *proto.GossipMessage)
+	Gossip(msg *proto.SignedGossipMessage)
 
 	// SendToPeer sends to a given peer a message.
 	// The nonce can be anything since the communication module handles the nonce itself
-	SendToPeer(peer *NetworkMember, msg *proto.GossipMessage)
+	SendToPeer(peer *NetworkMember, msg *proto.SignedGossipMessage)
 
 	// Ping probes a remote peer and returns if it's responsive or not
 	Ping(peer *NetworkMember) bool
 
 	// Accept returns a read-only channel for membership messages sent from remote peers
-	Accept() <-chan *proto.GossipMessage
+	Accept() <-chan *proto.SignedGossipMessage
 
 	// PresumedDead returns a read-only channel for peers that are presumed to be dead
 	PresumedDead() <-chan common.PKIidType
@@ -54,13 +54,28 @@ type CommService interface {
 
 // NetworkMember is a peer's representation
 type NetworkMember struct {
-	Endpoint string
-	Metadata []byte
-	PKIid    common.PKIidType
+	Endpoint         string
+	Metadata         []byte
+	PKIid            common.PKIidType
+	InternalEndpoint string
+}
+
+// PreferredEndpoint computes the endpoint to connect to,
+// while preferring internal endpoint over the standard
+// endpoint
+func (nm NetworkMember) PreferredEndpoint() string {
+	if nm.InternalEndpoint != "" {
+		return nm.InternalEndpoint
+	}
+	return nm.Endpoint
 }
 
 // Discovery is the interface that represents a discovery module
 type Discovery interface {
+
+	// Exists returns whether a peer with given
+	// PKI-ID is known
+	Exists(PKIID common.PKIidType) bool
 
 	// Self returns this instance's membership information
 	Self() NetworkMember

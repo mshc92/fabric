@@ -19,16 +19,16 @@ package kvledger
 import (
 	"errors"
 
+	"github.com/hyperledger/fabric/common/ledger/blkstorage"
+	"github.com/hyperledger/fabric/common/ledger/blkstorage/fsblkstorage"
+	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/blkstorage"
-	"github.com/hyperledger/fabric/core/ledger/blkstorage/fsblkstorage"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb/historyleveldb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/statecouchdb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/stateleveldb"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
-	"github.com/hyperledger/fabric/core/ledger/util/leveldbhelper"
 )
 
 var (
@@ -63,6 +63,8 @@ func NewProvider() (ledger.PeerLedgerProvider, error) {
 		blkstorage.IndexableAttrBlockNum,
 		blkstorage.IndexableAttrTxID,
 		blkstorage.IndexableAttrBlockNumTranNum,
+		blkstorage.IndexableAttrBlockTxID,
+		blkstorage.IndexableAttrTxValidationCode,
 	}
 	indexConfig := &blkstorage.IndexConfig{AttrsToIndex: attrsToIndex}
 	blockStoreProvider := fsblkstorage.NewProvider(
@@ -72,10 +74,10 @@ func NewProvider() (ledger.PeerLedgerProvider, error) {
 	// Initialize the versioned database (state database)
 	var vdbProvider statedb.VersionedDBProvider
 	if !ledgerconfig.IsCouchDBEnabled() {
-		logger.Debugf("Constructing leveldb VersionedDBProvider")
+		logger.Debug("Constructing leveldb VersionedDBProvider")
 		vdbProvider = stateleveldb.NewVersionedDBProvider()
 	} else {
-		logger.Debugf("Constructing CouchDB VersionedDBProvider")
+		logger.Debug("Constructing CouchDB VersionedDBProvider")
 		var err error
 		vdbProvider, err = statecouchdb.NewVersionedDBProvider()
 		if err != nil {
@@ -106,6 +108,8 @@ func (provider *Provider) Create(ledgerID string) (ledger.PeerLedger, error) {
 
 // Open implements the corresponding method from interface ledger.PeerLedgerProvider
 func (provider *Provider) Open(ledgerID string) (ledger.PeerLedger, error) {
+
+	logger.Debugf("Open() opening kvledger: %s", ledgerID)
 
 	// Check the ID store to ensure that the chainId/ledgerId exists
 	exists, err := provider.idStore.ledgerIDExists(ledgerID)

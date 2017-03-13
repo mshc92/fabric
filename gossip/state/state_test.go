@@ -34,20 +34,20 @@ import (
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip"
-	"github.com/hyperledger/fabric/gossip/proto"
+	"github.com/hyperledger/fabric/gossip/identity"
+	gossipUtil "github.com/hyperledger/fabric/gossip/util"
 	pcomm "github.com/hyperledger/fabric/protos/common"
-	"github.com/op/go-logging"
+	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
 	portPrefix = 5610
-	logger, _  = logging.GetLogger("GossipStateProviderTest")
+	logger     = gossipUtil.GetLogger(gossipUtil.LoggingStateModule, "")
 )
 
-var orgId = []byte("ORG1")
-var anchorPeerIdentity = api.PeerIdentityType("identityInOrg1")
+var orgID = []byte("ORG1")
 
 type joinChanMsg struct {
 }
@@ -60,7 +60,7 @@ func (*joinChanMsg) SequenceNumber() uint64 {
 
 // AnchorPeers returns all the anchor peers that are in the channel
 func (*joinChanMsg) AnchorPeers() []api.AnchorPeer {
-	return []api.AnchorPeer{{Cert: anchorPeerIdentity}}
+	return []api.AnchorPeer{{OrgID: orgID}}
 }
 
 type orgCryptoService struct {
@@ -69,7 +69,7 @@ type orgCryptoService struct {
 // OrgByPeerIdentity returns the OrgIdentityType
 // of a given peer identity
 func (*orgCryptoService) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIdentityType {
-	return orgId
+	return orgID
 }
 
 // Verify verifies a JoinChannelMessage, returns nil on success,
@@ -158,7 +158,7 @@ func newGossipConfig(id int, maxMsgCount int, boot ...int) *gossip.Config {
 		PropagatePeerNum:           3,
 		PullInterval:               time.Duration(4) * time.Second,
 		PullPeerNum:                5,
-		SelfEndpoint:               fmt.Sprintf("localhost:%d", port),
+		InternalEndpoint:           fmt.Sprintf("localhost:%d", port),
 		PublishCertPeriod:          10 * time.Second,
 		RequestStateInfoInterval:   4 * time.Second,
 		PublishStateInfoInterval:   4 * time.Second,
@@ -167,7 +167,10 @@ func newGossipConfig(id int, maxMsgCount int, boot ...int) *gossip.Config {
 
 // Create gossip instance
 func newGossipInstance(config *gossip.Config) gossip.Gossip {
-	return gossip.NewGossipServiceWithServer(config, &orgCryptoService{}, &naiveCryptoService{}, []byte(config.SelfEndpoint))
+	cryptoService := &naiveCryptoService{}
+	idMapper := identity.NewIdentityMapper(cryptoService)
+
+	return gossip.NewGossipServiceWithServer(config, &orgCryptoService{}, cryptoService, idMapper, []byte(config.InternalEndpoint))
 }
 
 // Create new instance of KVLedger to be used for testing
@@ -324,25 +327,24 @@ func TestNewGossipStateProvider_SendingManyMessages(t *testing.T) {
 	waitUntilTrueOrTimeout(t, func() bool {
 		for _, p := range peersSet {
 			if len(p.g.PeersOfChannel(common.ChainID(util.GetTestChainID()))) != bootstrapSetSize+standartPeersSize-1 {
-				logger.Debug("[XXXXXXX]: Peer discovery has not finished yet")
+				logger.Debug("Peer discovery has not finished yet")
 				return false
 			}
 		}
-		logger.Debug("[AAAAAA]: All peer discovered each other!!!")
+		logger.Debug("All peer discovered each other!!!")
 		return true
 	}, 30*time.Second)
 
-	logger.Debug("[!!!!!]: Waiting for all blocks to arrive.")
+	logger.Debug("Waiting for all blocks to arrive.")
 	waitUntilTrueOrTimeout(t, func() bool {
-		logger.Debug("[*****]: Trying to see all peers get all blocks")
+		logger.Debug("Trying to see all peers get all blocks")
 		for _, p := range peersSet {
 			height, err := p.commit.LedgerHeight()
 			if height != uint64(msgCount+1) || err != nil {
-				//logger.Debug("[XXXXXXX]: Ledger height is at: ", height)
 				return false
 			}
 		}
-		logger.Debug("[#####]: All peers have same ledger height!!!")
+		logger.Debug("All peers have same ledger height!!!")
 		return true
 	}, 60*time.Second)
 }
@@ -401,7 +403,7 @@ func TestGossipStateProvider_TestStateMessages(t *testing.T) {
 	select {
 	case <-readyCh:
 		{
-			logger.Info("[XXX]: Done!!!")
+			logger.Info("Done!!!")
 
 		}
 	case <-time.After(time.Duration(10) * time.Second):
@@ -414,12 +416,12 @@ func TestGossipStateProvider_TestStateMessages(t *testing.T) {
 func waitUntilTrueOrTimeout(t *testing.T, predicate func() bool, timeout time.Duration) {
 	ch := make(chan struct{})
 	go func() {
-		logger.Debug("[@@@@@]: Started to spin off, until predicate will be satisfied.")
+		logger.Debug("Started to spin off, until predicate will be satisfied.")
 		for !predicate() {
 			time.Sleep(1 * time.Second)
 		}
 		ch <- struct{}{}
-		logger.Debug("[@@@@@]: Done.")
+		logger.Debug("Done.")
 	}()
 
 	select {
@@ -429,5 +431,5 @@ func waitUntilTrueOrTimeout(t *testing.T, predicate func() bool, timeout time.Du
 		t.Fatal("Timeout has expired")
 		break
 	}
-	logger.Debug("[>>>>>] Stop wainting until timeout or true")
+	logger.Debug("Stop waiting until timeout or true")
 }

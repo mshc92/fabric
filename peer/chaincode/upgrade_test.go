@@ -25,7 +25,8 @@ import (
 	"github.com/hyperledger/fabric/peer/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	//	"github.com/hyperledger/fabric/protos/utils"
-	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
+
+	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 )
 
 var once sync.Once
@@ -47,7 +48,7 @@ func initMSP() {
 		mspMgrConfigDir = os.Getenv("GOPATH") + "/src/github.com/hyperledger/fabric/msp/sampleconfig/"
 	}
 
-	err := mspmgmt.LoadFakeSetupWithLocalMspAndTestChainMsp(mspMgrConfigDir)
+	err := msptesttools.LoadMSPSetupForTesting(mspMgrConfigDir)
 	if err != nil {
 		panic(fmt.Errorf("Fatal error when reading MSP config file %s: err %s\n", mspMgrConfigDir, err))
 	}
@@ -79,7 +80,7 @@ func TestUpgradeCmd(t *testing.T) {
 	cmd := upgradeCmd(mockCF)
 	AddFlags(cmd)
 
-	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
+	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 
 	if err := cmd.Execute(); err != nil {
@@ -112,7 +113,7 @@ func TestUpgradeCmdEndorseFail(t *testing.T) {
 	cmd := upgradeCmd(mockCF)
 	AddFlags(cmd)
 
-	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
+	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 
 	expectErrMsg := fmt.Sprintf("Could not assemble transaction, err Proposal response was not successful, error code %d, msg %s", errCode, errMsg)
@@ -152,7 +153,7 @@ func TestUpgradeCmdSendTXFail(t *testing.T) {
 	cmd := upgradeCmd(mockCF)
 	AddFlags(cmd)
 
-	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
+	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example02", "-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 
 	expectErrMsg := sendErr.Error()

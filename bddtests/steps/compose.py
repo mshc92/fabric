@@ -16,6 +16,7 @@
 import os
 import uuid
 import bdd_test_util
+from contexthelper import ContextHelper
 import peer_basic_impl
 import json
 
@@ -63,23 +64,50 @@ class Composition:
     def GetUUID(cls):
         return GetDockerSafeUUID()
 
-    def __init__(self, context, composeFilesYaml, projectName = GetDockerSafeUUID()):
+    def __init__(self, context, composeFilesYaml, projectName = None,
+                 force_recreate = True, components = []):
+        self.contextHelper = ContextHelper.GetHelper(context=context)
+        if not projectName:
+            projectName = self.contextHelper.getGuuid()
         self.projectName = projectName
         self.context = context
         self.containerDataList = []
         self.composeFilesYaml = composeFilesYaml
+
         self.serviceNames = []
         self.serviceNames = self._collectServiceNames()
         [callback.composing(self, context) for callback in Composition.GetCompositionCallbacksFromContext(context)]
-        self.issueCommand(["up", "--force-recreate", "-d"])
+        self.up(context, force_recreate, components)
 
     def _collectServiceNames(self):
         'First collect the services names.'
         servicesList = [service for service in self.issueCommand(["config", "--services"]).splitlines() if "WARNING" not in service]
         return servicesList
 
+    def up(self, context, force_recreate=True, components=[]):
+        self.serviceNames = self._collectServiceNames()
+        command = ["up", "-d"]
+        if force_recreate:
+            command += ["--force-recreate"]
+        self.issueCommand(command + components)
+
+    def scale(self, context, serviceName, count=1):
+        self.serviceNames = self._collectServiceNames()
+        command = ["scale", "%s=%d" %(serviceName, count)]
+        self.issueCommand(command)
+
+    def stop(self, context, components=[]):
+        self.serviceNames = self._collectServiceNames()
+        command = ["stop"]
+        self.issueCommand(command, components)
+
+    def start(self, context, components=[]):
+        self.serviceNames = self._collectServiceNames()
+        command = ["start"]
+        self.issueCommand(command, components)
+
     def getServiceNames(self):
-         return list(self.serviceNames)
+        return list(self.serviceNames)
 
     def parseComposeFilesArg(self, composeFileArgs):
         args = [arg for sublist in [["-f", file] for file in [file if not os.path.isdir(file) else os.path.join(file, 'docker-compose.yml') for file in composeFileArgs.split()]] for arg in sublist]
@@ -88,25 +116,59 @@ class Composition:
     def getFileArgs(self):
         return self.parseComposeFilesArg(self.composeFilesYaml)
 
-    def getEnv(self):
-        myEnv = os.environ.copy()
+    def getEnvAdditions(self):
+        myEnv = {}
         myEnv["COMPOSE_PROJECT_NAME"] = self.projectName
         myEnv["CORE_PEER_NETWORKID"] = self.projectName
         # Invoke callbacks
         [callback.getEnv(self, self.context, myEnv) for callback in Composition.GetCompositionCallbacksFromContext(self.context)]
         return myEnv
 
+    def getEnv(self):
+        myEnv = os.environ.copy()
+        for key,value in self.getEnvAdditions().iteritems():
+            myEnv[key] = value
+        # myEnv["COMPOSE_PROJECT_NAME"] = self.projectName
+        # myEnv["CORE_PEER_NETWORKID"] = self.projectName
+        # # Invoke callbacks
+        # [callback.getEnv(self, self.context, myEnv) for callback in Composition.GetCompositionCallbacksFromContext(self.context)]
+        return myEnv
+
+    def getConfig(self):
+        return self.issueCommand(["config"])
+
     def refreshContainerIDs(self):
         containers = self.issueCommand(["ps", "-q"]).split()
         return containers
 
+    def _callCLI(self, argList, expect_success, env):
+        return bdd_test_util.cli_call(argList, expect_success=expect_success, env=env)
 
-    def issueCommand(self, args):
-        cmdArgs = self.getFileArgs()+ args
+    def issueCommand(self, command, components=[]):
+        componentList = []
+        useCompose = True
+        for component in components:
+            if '_' in component:
+                useCompose = False
+                componentList.append("%s_%s" % (self.projectName, component))
+            else:
+                break
+
+        # If we need to perform an operation on a specific container, use
+        # docker not docker-compose
+        if useCompose:
+            cmdArgs = self.getFileArgs()+ command + components
+            cmd = ["docker-compose"] + cmdArgs
+        else:
+            cmdArgs = command + componentList
+            cmd = ["docker"] + cmdArgs
+
+        #print("cmd:", cmd)
         output, error, returncode = \
-            bdd_test_util.cli_call(["docker-compose"] + cmdArgs, expect_success=True, env=self.getEnv())
+            self._callCLI(cmd, expect_success=True, env=self.getEnv())
+
         # Don't rebuild if ps command
-        if args[0] !="ps" and args[0] !="config":
+        if command[0] !="ps" and command[0] !="config":
             self.rebuildContainerData()
         return output
 
@@ -141,6 +203,7 @@ class Composition:
 
     def decompose(self):
         self.issueCommand(["unpause"])
+        self.issueCommand(["down"])
         self.issueCommand(["kill"])
         self.issueCommand(["rm", "-f"])
 
@@ -160,4 +223,3 @@ class Composition:
 
         # Invoke callbacks
         [callback.decomposing(self, self.context) for callback in Composition.GetCompositionCallbacksFromContext(self.context)]
-

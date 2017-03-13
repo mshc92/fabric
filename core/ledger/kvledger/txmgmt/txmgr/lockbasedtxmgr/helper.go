@@ -17,16 +17,19 @@ limitations under the License.
 package lockbasedtxmgr
 
 import (
+	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwset"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
+	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
 )
 
 type queryHelper struct {
 	txmgr       *LockBasedTxMgr
 	rwset       *rwset.RWSet
 	itrs        []*resultsItr
+	err         error
 	doneInvoked bool
 }
 
@@ -60,9 +63,10 @@ func (h *queryHelper) getStateMultipleKeys(namespace string, keys []string) ([][
 	return values, nil
 }
 
-func (h *queryHelper) getStateRangeScanIterator(namespace string, startKey string, endKey string) (ledger.ResultsIterator, error) {
+func (h *queryHelper) getStateRangeScanIterator(namespace string, startKey string, endKey string) (commonledger.ResultsIterator, error) {
 	h.checkDone()
-	itr, err := newResultsItr(namespace, startKey, endKey, h.txmgr.db, h.rwset)
+	itr, err := newResultsItr(namespace, startKey, endKey, h.txmgr.db, h.rwset,
+		ledgerconfig.IsQueryReadsHashingEnabled(), ledgerconfig.GetMaxDegreeQueryReadsHashing())
 	if err != nil {
 		return nil, err
 	}
@@ -70,8 +74,8 @@ func (h *queryHelper) getStateRangeScanIterator(namespace string, startKey strin
 	return itr, nil
 }
 
-func (h *queryHelper) executeQuery(query string) (ledger.ResultsIterator, error) {
-	dbItr, err := h.txmgr.db.ExecuteQuery(query)
+func (h *queryHelper) executeQuery(namespace, query string) (commonledger.ResultsIterator, error) {
+	dbItr, err := h.txmgr.db.ExecuteQuery(namespace, query)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +91,17 @@ func (h *queryHelper) done() {
 	for _, itr := range h.itrs {
 		itr.Close()
 		if h.rwset != nil {
+			results, hash, err := itr.rangeQueryResultsHelper.Done()
+			itr.rangeQueryInfo.Results = results
+			itr.rangeQueryInfo.ResultHash = hash
+
+			// TODO Change the method signature of done() to return error. However, this will have
+			// repercurssions in the chaincode package, so deferring to a separate changeset.
+			// For now, capture the first error that is encountered
+			// during final processing and return the error when the caller retrieves the simulation results.
+			if h.err == nil {
+				h.err = err
+			}
 			h.rwset.AddToRangeQuerySet(itr.ns, itr.rangeQueryInfo)
 		}
 	}
@@ -103,22 +118,34 @@ func (h *queryHelper) checkDone() {
 // to build rangeQueryInfo in the ReadWriteSet that is used
 // for performing phantom read validation during commit
 type resultsItr struct {
-	ns             string
-	endKey         string
-	dbItr          statedb.ResultsIterator
-	rwSet          *rwset.RWSet
-	rangeQueryInfo *rwset.RangeQueryInfo
+	ns                      string
+	endKey                  string
+	dbItr                   statedb.ResultsIterator
+	rwSet                   *rwset.RWSet
+	rangeQueryInfo          *rwset.RangeQueryInfo
+	rangeQueryResultsHelper *rwset.RangeQueryResultsHelper
 }
 
-func newResultsItr(ns string, startKey string, endKey string, db statedb.VersionedDB, rwSet *rwset.RWSet) (*resultsItr, error) {
+func newResultsItr(ns string, startKey string, endKey string,
+	db statedb.VersionedDB, rwSet *rwset.RWSet, enableHashing bool, maxDegree int) (*resultsItr, error) {
 	dbItr, err := db.GetStateRangeScanIterator(ns, startKey, endKey)
 	if err != nil {
 		return nil, err
 	}
-	// In the range query info, just set the StartKey.
-	// Set the EndKey later below in the Next() method.
-	rqInfo := &rwset.RangeQueryInfo{StartKey: startKey}
-	return &resultsItr{ns, endKey, dbItr, rwSet, rqInfo}, nil
+	itr := &resultsItr{ns: ns, dbItr: dbItr}
+	// it's a simulation request so, enable capture of range query info
+	if rwSet != nil {
+		itr.rwSet = rwSet
+		itr.endKey = endKey
+		// just set the StartKey... set the EndKey later below in the Next() method.
+		itr.rangeQueryInfo = &rwset.RangeQueryInfo{StartKey: startKey}
+		resultsHelper, err := rwset.NewRangeQueryResultsHelper(enableHashing, maxDegree)
+		if err != nil {
+			return nil, err
+		}
+		itr.rangeQueryResultsHelper = resultsHelper
+	}
+	return itr, nil
 }
 
 // Next implements method in interface ledger.ResultsIterator
@@ -128,7 +155,7 @@ func newResultsItr(ns string, startKey string, endKey string, db statedb.Version
 // caller decides to stop iterating at some intermidiate point. Alternatively, we could have
 // set the EndKey and ItrExhausted in the Close() function but it may not be desirable to change
 // transactional behaviour based on whether the Close() was invoked or not
-func (itr *resultsItr) Next() (ledger.QueryResult, error) {
+func (itr *resultsItr) Next() (commonledger.QueryResult, error) {
 	queryResult, err := itr.dbItr.Next()
 	if err != nil {
 		return nil, err
@@ -159,7 +186,7 @@ func (itr *resultsItr) updateRangeQueryInfo(queryResult statedb.QueryResult) {
 		return
 	}
 	versionedKV := queryResult.(*statedb.VersionedKV)
-	itr.rangeQueryInfo.AddResult(rwset.NewKVRead(versionedKV.Key, versionedKV.Version))
+	itr.rangeQueryResultsHelper.AddResult(rwset.NewKVRead(versionedKV.Key, versionedKV.Version))
 	// Set the end key to the latest key retrieved by the caller.
 	// Because, the caller may actually not invoke the Next() function again
 	itr.rangeQueryInfo.EndKey = versionedKV.Key
@@ -176,7 +203,7 @@ type queryResultsItr struct {
 }
 
 // Next implements method in interface ledger.ResultsIterator
-func (itr *queryResultsItr) Next() (ledger.QueryResult, error) {
+func (itr *queryResultsItr) Next() (commonledger.QueryResult, error) {
 
 	queryResult, err := itr.DBItr.Next()
 	if err != nil {
